@@ -11,6 +11,10 @@ jobs:
   displayName: Playwright in container
   container: mcr.microsoft.com/playwright:v1.48.2-jammy
 
+  variables:
+    # Important: tells Playwright to use preinstalled browsers in the image
+    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+
   steps:
   - checkout: self
     fetchDepth: 1
@@ -21,13 +25,12 @@ jobs:
     displayName: Show Node/npm
 
   - script: |
+      echo "Installing project dependencies..."
       npm ci
-      # Browsers are already in this image; this is optional but harmless:
-      npx playwright install --with-deps
+      echo "Running Playwright tests..."
       npm run test:all
     displayName: Run Playwright tests
 
-  # Sanity: always list where reports would be
   - script: |
       echo "Listing reports/junit:"
       ls -la reports/junit || true
@@ -49,16 +52,4 @@ jobs:
 
   - publish: reports/html
     artifact: PlaywrightHtmlReport
-    condition: always()
-
-  - script: |
-      SUMMARY="$(Build.SourcesDirectory)/summary.md"
-      {
-        echo "# Containerized Playwright Run"
-        echo ""
-        echo "HTML report: **PlaywrightHtmlReport** (Artifacts)."
-        echo "If empty, check the 'List potential report locations' step."
-      } > "$SUMMARY"
-      echo "##vso[task.uploadsummary]$SUMMARY"
-    displayName: Attach summary
     condition: always()
