@@ -1,0 +1,15 @@
+{
+  "name": "azure-playwright-containers-starter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright starter that runs in Azure Pipelines container job. Start small, then add sharding.",
+  "scripts": {
+    "pretest": "mkdir -p reports/junit reports/html || true",
+    "test:all": "playwright test",
+    "pw:install": "playwright install --with-deps"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "typescript": "^5.6.2"
+  }
+}
