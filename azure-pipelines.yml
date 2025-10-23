@@ -6,51 +6,59 @@ trigger:
 pool:
   vmImage: 'ubuntu-latest'
 
-variables:
-  NODE_VERSION: '20.x'
+jobs:
+- job: e2e_in_container
+  displayName: Playwright in container
+  container: mcr.microsoft.com/playwright:v1.48.2-jammy
 
-# Smallest step: run Playwright in a single container job using docker run.
-steps:
+  steps:
   - checkout: self
     fetchDepth: 1
 
-  - script: node -v && npm -v
-    displayName: 'Show Node/npm versions'
+  - script: |
+      node -v
+      npm -v
+    displayName: Show Node/npm
 
-  # Use official Playwright image that already has browsers and OS deps
-  - task: Bash@3
-    displayName: 'Run tests inside official Playwright container'
-    inputs:
-      targetType: 'inline'
-      script: |
-        docker run --rm           -v $(Build.SourcesDirectory):/work           -w /work           -e BASE_URL=$(BASE_URL)           mcr.microsoft.com/playwright:v1.48.2-jammy           bash -lc "node -v && npm ci && npx playwright install --with-deps && npm run test:all"
+  - script: |
+      npm ci
+      # Browsers are already in this image; this is optional but harmless:
+      npx playwright install --with-deps
+      npm run test:all
+    displayName: Run Playwright tests
 
-  # Publish JUnit to Tests tab
+  # Sanity: always list where reports would be
+  - script: |
+      echo "Listing reports/junit:"
+      ls -la reports/junit || true
+      echo "Listing reports/html:"
+      ls -la reports/html || true
+      echo "Listing defaults (in case reporters were overridden):"
+      ls -la junit-results.xml || true
+      ls -la playwright-report || true
+    displayName: List potential report locations
+    condition: always()
+
   - task: PublishTestResults@2
-    displayName: 'Publish JUnit test results'
+    displayName: Publish JUnit
     condition: always()
     inputs:
       testResultsFormat: 'JUnit'
       testResultsFiles: 'reports/junit/**/*.xml'
       testRunTitle: 'Playwright (container job)'
 
-  # Publish HTML report artifact
   - publish: reports/html
     artifact: PlaywrightHtmlReport
     condition: always()
 
-  # Summary
   - script: |
       SUMMARY="$(Build.SourcesDirectory)/summary.md"
       {
         echo "# Containerized Playwright Run"
         echo ""
-        echo "HTML report is in the **PlaywrightHtmlReport** artifact."
-        echo ""
-        echo "BASE_URL: $(BASE_URL)"
-        echo "Build: $(Build.BuildNumber)"
-        echo "Agent: $(Agent.OS)"
+        echo "HTML report: **PlaywrightHtmlReport** (Artifacts)."
+        echo "If empty, check the 'List potential report locations' step."
       } > "$SUMMARY"
       echo "##vso[task.uploadsummary]$SUMMARY"
-    displayName: 'Attach summary'
+    displayName: Attach summary
     condition: always()
