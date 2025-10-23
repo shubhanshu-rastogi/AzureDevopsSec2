@@ -1,0 +1,10 @@
+<testsuites id="" name="" tests="2" failures="0" skipped="0" errors="0" time="1.8275169999999998">
+<testsuite name="api\health.spec.ts" timestamp="2025-10-23T21:05:10.860Z" hostname="chromium" tests="1" failures="0" skipped="0" time="0.159" errors="0">
+<testcase name="GET /todos/1 responds with id=1" classname="api\health.spec.ts" time="0.159">
+</testcase>
+</testsuite>
+<testsuite name="ui\home.spec.ts" timestamp="2025-10-23T21:05:10.860Z" hostname="chromium" tests="1" failures="0" skipped="0" time="0.636" errors="0">
+<testcase name="homepage has title and get started link" classname="ui\home.spec.ts" time="0.636">
+</testcase>
+</testsuite>
+</testsuites>
