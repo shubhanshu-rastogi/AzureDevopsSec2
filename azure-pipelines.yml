@@ -84,7 +84,7 @@ jobs:
   - checkout: self
     fetchDepth: 1
 
-  # Download each shard's blob artifact
+  # Download each shard's blob artifact (produced by the shard jobs)
   - task: DownloadPipelineArtifact@2
     displayName: Download shard 1 blob
     inputs:
@@ -109,20 +109,28 @@ jobs:
       artifact: blob-4
       path: $(Pipeline.Workspace)/all-blobs/shard4
 
+  # Ensure project deps are present so `npx playwright` is available
+  - script: |
+      npm ci
+    displayName: Install deps for merge
+    workingDirectory: $(Build.SourcesDirectory)
+
   # Merge to a single HTML report (playwright-report/)
   - script: |
       set -e
       mkdir -p blob-report-merged
-      # Flatten shard dirs into one blob folder
-      cp -r $(Pipeline.Workspace)/all-blobs/*/* blob-report-merged/ || true
+      # Gather all shard blob files into one folder (some shards may be empty)
+      cp -r $(Pipeline.Workspace)/all-blobs/*/* blob-report-merged/ 2>/dev/null || true
 
+      # Merge → generates ./playwright-report
       npx playwright merge-reports --reporter html blob-report-merged
 
       echo "Merged report contents:"
       ls -la playwright-report || true
     displayName: Merge blob reports
+    workingDirectory: $(Build.SourcesDirectory)
 
   # Publish ONE consolidated HTML report
-  - publish: playwright-report
+  - publish: $(Build.SourcesDirectory)/playwright-report
     artifact: PlaywrightHtmlReport
     condition: always()
