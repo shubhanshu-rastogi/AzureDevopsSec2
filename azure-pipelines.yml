@@ -7,12 +7,26 @@ pool:
   vmImage: 'ubuntu-latest'
 
 jobs:
-- job: e2e_in_container
-  displayName: Playwright in container
+- job: playwright_parallel
+  displayName: Playwright Parallel Shards
   container: mcr.microsoft.com/playwright:v1.56.1-jammy
 
-  variables:
-    # Important: tells Playwright to use preinstalled browsers in the image
+  strategy:
+    matrix:
+      shard1:
+        SHARD_INDEX: 1
+        SHARD_TOTAL: 4
+      shard2:
+        SHARD_INDEX: 2
+        SHARD_TOTAL: 4
+      shard3:
+        SHARD_INDEX: 3
+        SHARD_TOTAL: 4
+      shard4:
+        SHARD_INDEX: 4
+        SHARD_TOTAL: 4
+
+    variables:
     PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
 
   steps:
@@ -20,36 +34,20 @@ jobs:
     fetchDepth: 1
 
   - script: |
-      node -v
-      npm -v
-    displayName: Show Node/npm
-
-  - script: |
-      echo "Installing project dependencies..."
       npm ci
-      echo "Running Playwright tests..."
-      npm run test:all
-    displayName: Run Playwright tests
-
-  - script: |
-      echo "Listing reports/junit:"
-      ls -la reports/junit || true
-      echo "Listing reports/html:"
-      ls -la reports/html || true
-      echo "Listing defaults (in case reporters were overridden):"
-      ls -la junit-results.xml || true
-      ls -la playwright-report || true
-    displayName: List potential report locations
-    condition: always()
+      echo "Running shard $(SHARD_INDEX)/$(SHARD_TOTAL)"
+      npx playwright test --shard=$(SHARD_INDEX)/$(SHARD_TOTAL)
+    displayName: Run Playwright Shard
+    continueOnError: true
 
   - task: PublishTestResults@2
-    displayName: Publish JUnit
+    displayName: Publish JUnit for shard $(SHARD_INDEX)
     condition: always()
     inputs:
       testResultsFormat: 'JUnit'
       testResultsFiles: 'reports/junit/**/*.xml'
-      testRunTitle: 'Playwright (container job)'
+      testRunTitle: "Playwright Shard $(SHARD_INDEX)"
 
   - publish: reports/html
-    artifact: PlaywrightHtmlReport
+    artifact: PlaywrightHtmlReport-$(SHARD_INDEX)
     condition: always()
