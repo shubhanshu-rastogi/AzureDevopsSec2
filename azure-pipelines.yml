@@ -11,6 +11,9 @@ jobs:
   displayName: Playwright Parallel Shards
   container: mcr.microsoft.com/playwright:v1.56.1-jammy
 
+  variables:
+    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+
   strategy:
     matrix:
       shard1:
@@ -25,9 +28,6 @@ jobs:
       shard4:
         SHARD_INDEX: 4
         SHARD_TOTAL: 4
-
-    variables:
-    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
 
   steps:
   - checkout: self
