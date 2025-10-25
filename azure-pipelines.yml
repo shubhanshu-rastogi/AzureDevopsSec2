@@ -6,12 +6,16 @@ trigger:
 pool:
   vmImage: 'ubuntu-latest'
 
+# --------------------------
+# Parallel shard job (4x)
+# --------------------------
 jobs:
 - job: playwright_parallel
   displayName: Playwright Parallel Shards
   container: mcr.microsoft.com/playwright:v1.56.1-jammy
 
   variables:
+    # Use browsers preinstalled in the Playwright image
     PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
 
   strategy:
@@ -34,12 +38,19 @@ jobs:
     fetchDepth: 1
 
   - script: |
+      node -v
+      npm -v
+    displayName: Show Node/npm
+
+  - script: |
       npm ci
       echo "Running shard $(SHARD_INDEX)/$(SHARD_TOTAL)"
       npx playwright test --shard=$(SHARD_INDEX)/$(SHARD_TOTAL)
     displayName: Run Playwright Shard
+    # Keep pipeline going so we can always publish/merge reports
     continueOnError: true
 
+  # Publish JUnit so Tests tab shows consolidated pass/fail
   - task: PublishTestResults@2
     displayName: Publish JUnit for shard $(SHARD_INDEX)
     condition: always()
@@ -48,6 +59,70 @@ jobs:
       testResultsFiles: 'reports/junit/**/*.xml'
       testRunTitle: "Playwright Shard $(SHARD_INDEX)"
 
+  # Optional: per-shard HTML (handy for debugging individual shards)
   - publish: reports/html
     artifact: PlaywrightHtmlReport-$(SHARD_INDEX)
+    condition: always()
+
+  # Needed for merge step
+  - publish: blob-report
+    artifact: blob-$(SHARD_INDEX)
+    condition: always()
+
+# --------------------------------------
+# Merge blobs into ONE consolidated HTML
+# --------------------------------------
+- job: merge_reports
+  displayName: Merge Playwright Reports
+  container: mcr.microsoft.com/playwright:v1.56.1-jammy
+  dependsOn: playwright_parallel
+
+  variables:
+    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+
+  steps:
+  - checkout: self
+    fetchDepth: 1
+
+  # Download each shard's blob artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: Download shard 1 blob
+    inputs:
+      artifact: blob-1
+      path: $(Pipeline.Workspace)/all-blobs/shard1
+
+  - task: DownloadPipelineArtifact@2
+    displayName: Download shard 2 blob
+    inputs:
+      artifact: blob-2
+      path: $(Pipeline.Workspace)/all-blobs/shard2
+
+  - task: DownloadPipelineArtifact@2
+    displayName: Download shard 3 blob
+    inputs:
+      artifact: blob-3
+      path: $(Pipeline.Workspace)/all-blobs/shard3
+
+  - task: DownloadPipelineArtifact@2
+    displayName: Download shard 4 blob
+    inputs:
+      artifact: blob-4
+      path: $(Pipeline.Workspace)/all-blobs/shard4
+
+  # Merge to a single HTML report (playwright-report/)
+  - script: |
+      set -e
+      mkdir -p blob-report-merged
+      # Flatten shard dirs into one blob folder
+      cp -r $(Pipeline.Workspace)/all-blobs/*/* blob-report-merged/ || true
+
+      npx playwright merge-reports --reporter html blob-report-merged
+
+      echo "Merged report contents:"
+      ls -la playwright-report || true
+    displayName: Merge blob reports
+
+  # Publish ONE consolidated HTML report
+  - publish: playwright-report
+    artifact: PlaywrightHtmlReport
     condition: always()

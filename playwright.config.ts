@@ -7,7 +7,8 @@ export default defineConfig({
   reporter: [
     ['list'],
     ['junit', { outputFile: 'reports/junit/results.xml' }],
-    ['html', { outputFolder: 'reports/html', open: 'never' }]
+    ['html', { outputFolder: 'reports/html', open: 'never' }],
+    ['blob'] 
   ],
   use: {
     baseURL: process.env.BASE_URL || 'https://playwright.dev',
