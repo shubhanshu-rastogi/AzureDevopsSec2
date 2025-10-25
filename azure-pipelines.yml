@@ -6,131 +6,175 @@ trigger:
 pool:
   vmImage: 'ubuntu-latest'
 
-# --------------------------
-# Parallel shard job (4x)
-# --------------------------
-jobs:
-- job: playwright_parallel
-  displayName: Playwright Parallel Shards
-  container: mcr.microsoft.com/playwright:v1.56.1-jammy
+variables:
+  # Resource names/values you created
+  RG: qa-playwright-rg
+  ACR_NAME: shubhanshuazurefirst
+  IMAGE_NAME: playwright-tests
+  IMAGE_TAG: v1
+  STG_ACCOUNT: <your-storage-account-name>   # e.g. pwreports123456
+  STG_CONTAINER: test-reports
+  SHARD_TOTAL: 4
 
-  variables:
-    # Use browsers preinstalled in the Playwright image
-    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+stages:
+# 1) Build & push the test image to ACR (uses ci/Dockerfile in your repo)
+- stage: build_image
+  displayName: Build test image
+  jobs:
+  - job: build
+    displayName: Build & Push to ACR
+    steps:
+    - checkout: self
+      fetchDepth: 1
 
-  strategy:
-    matrix:
-      shard1:
-        SHARD_INDEX: 1
-        SHARD_TOTAL: 4
-      shard2:
-        SHARD_INDEX: 2
-        SHARD_TOTAL: 4
-      shard3:
-        SHARD_INDEX: 3
-        SHARD_TOTAL: 4
-      shard4:
-        SHARD_INDEX: 4
-        SHARD_TOTAL: 4
+    - task: AzureCLI@2
+      displayName: ACR build
+      inputs:
+        azureSubscription: 'azure-spn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr build \
+            --registry $(ACR_NAME) \
+            --image $(IMAGE_NAME):$(IMAGE_TAG) \
+            -f ci/Dockerfile .
 
-  steps:
-  - checkout: self
-    fetchDepth: 1
+# 2) Start ACI containers for shards, run tests, upload results to Blob
+- stage: run_shards_aci
+  displayName: Run shards on ACI
+  dependsOn: build_image
+  jobs:
+  - job: shards
+    displayName: Start ACI shards
+    strategy:
+      matrix:
+        shard1: { SHARD_INDEX: 1 }
+        shard2: { SHARD_INDEX: 2 }
+        shard3: { SHARD_INDEX: 3 }
+        shard4: { SHARD_INDEX: 4 }
+    steps:
+    - task: AzureCLI@2
+      displayName: Create ACI and run shard $(SHARD_INDEX)
+      inputs:
+        azureSubscription: 'azure-spn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          NAME="pw-shard$(SHARD_INDEX)-$(Build.BuildId)"
+          IMAGE="$(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(IMAGE_TAG)"
 
-  - script: |
-      node -v
-      npm -v
-    displayName: Show Node/npm
+          echo "Creating ACI $NAME using image $IMAGE"
+          az container create \
+            --resource-group $(RG) \
+            --name "$NAME" \
+            --image "$IMAGE" \
+            --registry-login-server $(ACR_NAME).azurecr.io \
+            --registry-username "$(ACR_USERNAME)" \
+            --registry-password "$(ACR_PASSWORD)" \
+            --restart-policy Never \
+            --cpu 2 --memory 4 \
+            --environment-variables \
+              SHARD_INDEX=$(SHARD_INDEX) \
+              SHARD_TOTAL=$(SHARD_TOTAL) \
+              BUILD_ID=$(Build.BuildId) \
+              STG_ACCOUNT=$(STG_ACCOUNT) \
+              STG_CONTAINER=$(STG_CONTAINER) \
+              STORAGE_KEY=$(STORAGE_KEY) \
+              PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+            --command-line "bash -lc '
+              set -e
+              echo Running shard ${SHARD_INDEX}/${SHARD_TOTAL}
+              npm ci
+              npx playwright test --shard=${SHARD_INDEX}/${SHARD_TOTAL} || true
 
-  - script: |
-      npm ci
-      echo "Running shard $(SHARD_INDEX)/$(SHARD_TOTAL)"
-      npx playwright test --shard=$(SHARD_INDEX)/$(SHARD_TOTAL)
-    displayName: Run Playwright Shard
-    # Keep pipeline going so we can always publish/merge reports
-    continueOnError: true
+              # Upload results (JUnit, HTML, blob-report) to Blob Storage
+              DEST=https://${STG_ACCOUNT}.blob.core.windows.net/${STG_CONTAINER}/${BUILD_ID}/shard${SHARD_INDEX}
+              echo Uploading to ${DEST}
 
-  # Publish JUnit so Tests tab shows consolidated pass/fail
-  - task: PublishTestResults@2
-    displayName: Publish JUnit for shard $(SHARD_INDEX)
-    condition: always()
-    inputs:
-      testResultsFormat: 'JUnit'
-      testResultsFiles: 'reports/junit/**/*.xml'
-      testRunTitle: "Playwright Shard $(SHARD_INDEX)"
+              # azcopy is preinstalled in the image via ci/Dockerfile
+              azcopy copy \"reports/junit/*\" \"${DEST}/reports/junit\" --recursive --from-to=LocalBlob --put-md5 --dest-key ${STORAGE_KEY} || true
+              azcopy copy \"reports/html/*\"  \"${DEST}/reports/html\"  --recursive --from-to=LocalBlob --put-md5 --dest-key ${STORAGE_KEY} || true
+              azcopy copy \"blob-report/*\"   \"${DEST}/blob-report\"   --recursive --from-to=LocalBlob --put-md5 --dest-key ${STORAGE_KEY} || true
 
-  # Optional: per-shard HTML (handy for debugging individual shards)
-  - publish: reports/html
-    artifact: PlaywrightHtmlReport-$(SHARD_INDEX)
-    condition: always()
+              echo Done shard ${SHARD_INDEX}/${SHARD_TOTAL}
+            '"
 
-  # Needed for merge step
-  - publish: blob-report
-    artifact: blob-$(SHARD_INDEX)
-    condition: always()
+          echo "Waiting for completion..."
+          az container wait --resource-group $(RG) --name "$NAME" --custom "instanceView.state=='Terminated'" || true
+          echo "Logs for $NAME:"
+          az container logs --resource-group $(RG) --name "$NAME" || true
 
-# --------------------------------------
-# Merge blobs into ONE consolidated HTML
-# --------------------------------------
-- job: merge_reports
-  displayName: Merge Playwright Reports
-  container: mcr.microsoft.com/playwright:v1.56.1-jammy
-  dependsOn: playwright_parallel
-
-  variables:
-    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
-
-  steps:
-  - checkout: self
-    fetchDepth: 1
-
-  # Download each shard's blob artifact (produced by the shard jobs)
-  - task: DownloadPipelineArtifact@2
-    displayName: Download shard 1 blob
-    inputs:
-      artifact: blob-1
-      path: $(Pipeline.Workspace)/all-blobs/shard1
-
-  - task: DownloadPipelineArtifact@2
-    displayName: Download shard 2 blob
-    inputs:
-      artifact: blob-2
-      path: $(Pipeline.Workspace)/all-blobs/shard2
-
-  - task: DownloadPipelineArtifact@2
-    displayName: Download shard 3 blob
-    inputs:
-      artifact: blob-3
-      path: $(Pipeline.Workspace)/all-blobs/shard3
-
-  - task: DownloadPipelineArtifact@2
-    displayName: Download shard 4 blob
-    inputs:
-      artifact: blob-4
-      path: $(Pipeline.Workspace)/all-blobs/shard4
-
-  # Ensure project deps are present so `npx playwright` is available
-  - script: |
-      npm ci
-    displayName: Install deps for merge
-    workingDirectory: $(Build.SourcesDirectory)
-
-  # Merge to a single HTML report (playwright-report/)
-  - script: |
-      set -e
-      mkdir -p blob-report-merged
-      # Gather all shard blob files into one folder (some shards may be empty)
-      cp -r $(Pipeline.Workspace)/all-blobs/*/* blob-report-merged/ 2>/dev/null || true
-
-      # Merge → generates ./playwright-report
-      npx playwright merge-reports --reporter html blob-report-merged
-
-      echo "Merged report contents:"
-      ls -la playwright-report || true
+# 3) Merge blob reports into one HTML and publish the consolidated artifact
+- stage: merge_and_publish
+  displayName: Merge & publish consolidated report
+  dependsOn: run_shards_aci
+  jobs:
+  - job: merge
     displayName: Merge blob reports
-    workingDirectory: $(Build.SourcesDirectory)
+    container: mcr.microsoft.com/playwright:v1.56.1-jammy
+    steps:
+    - checkout: self
+      fetchDepth: 1
 
-  # Publish ONE consolidated HTML report
-  - publish: $(Build.SourcesDirectory)/playwright-report
-    artifact: PlaywrightHtmlReport
-    condition: always()
+    - task: AzureCLI@2
+      displayName: Download shard blobs
+      inputs:
+        azureSubscription: 'azure-spn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          DEST="$(Build.SourcesDirectory)/all-blobs"
+          mkdir -p "$DEST"
+
+          az storage blob download-batch \
+            --account-name $(STG_ACCOUNT) \
+            --account-key "$(STORAGE_KEY)" \
+            --destination "$DEST" \
+            --source "$(STG_CONTAINER)/$(Build.BuildId)" \
+            --no-progress
+
+          echo "Downloaded structure:"
+          find "$DEST" -maxdepth 3 -type d -print || true
+
+    - script: |
+        set -e
+        npm ci
+        mkdir -p blob-report-merged
+        # Gather all shard blob files into one folder (shards with no output are tolerated)
+        cp -r all-blobs/**/blob-report/* blob-report-merged/ 2>/dev/null || true
+
+        # Merge → generates ./playwright-report
+        npx playwright merge-reports --reporter html blob-report-merged
+
+        echo "Merged report contents:"
+        ls -la playwright-report || true
+      displayName: Merge blob reports
+      workingDirectory: $(Build.SourcesDirectory)
+
+    - publish: $(Build.SourcesDirectory)/playwright-report
+      artifact: PlaywrightHtmlReport
+      condition: always()
+
+# 4) Cleanup ACI containers
+- stage: cleanup
+  displayName: Cleanup ACI
+  dependsOn: run_shards_aci
+  condition: always()
+  jobs:
+  - job: delete_aci
+    displayName: Delete ACI containers
+    steps:
+    - task: AzureCLI@2
+      displayName: Delete shards
+      inputs:
+        azureSubscription: 'azure-spn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          for i in $(seq 1 $(SHARD_TOTAL)); do
+            NAME="pw-shard${i}-$(Build.BuildId)"
+            echo "Deleting $NAME"
+            az container delete --resource-group $(RG) --name "$NAME" --yes || true
+          done
