@@ -9,7 +9,7 @@ pool:
 jobs:
 - job: e2e_in_container
   displayName: Playwright in container
-  container: mcr.microsoft.com/playwright:v1.48.2-jammy
+  container: mcr.microsoft.com/playwright:v1.56.1-jammy
 
   variables:
     # Important: tells Playwright to use preinstalled browsers in the image
